@@ -43,31 +43,34 @@ const cycleSize = (c) => {
   return n >= 4 ? n / gcd(n, 4) : null;
 };
 
-const LOOKAHEAD = 4; // cuántos partidos hacia adelante se revisa para no quedar sin salida
+const LOOKAHEAD = 6; // cuántos partidos hacia adelante se revisa para no quedar sin salida
 
 const pairKey = (t) => key(t[0].id, t[1].id);
 const matchKey = (t1, t2) => [pairKey(t1), pairKey(t2)].sort().join('|');
+const groupKey = (t1, t2) => [...t1, ...t2].map((p) => p.id).sort((a, b) => a - b).join('-'); // los 4 jugadores
 
 // Cuenta lo jugado y lo planificado (jugados + pendientes)
 function stats(c) {
-  const cnt = {}, last = {}, partner = {}, opp = {}, used = {};
+  const cnt = {}, last = {}, partner = {}, opp = {}, used = {}, groups = {};
   c.players.forEach((p) => { cnt[p.id] = p.credit; last[p.id] = p.since; });
   c.matches.forEach((m, i) => {
     [...m.t1, ...m.t2].forEach((p) => { if (p.id in cnt) { cnt[p.id]++; last[p.id] = i; } });
     [m.t1, m.t2].forEach((t) => { const k = pairKey(t); partner[k] = (partner[k] || 0) + 1; });
     m.t1.forEach((a) => m.t2.forEach((b) => { const k = key(a.id, b.id); opp[k] = (opp[k] || 0) + 1; }));
     const k = matchKey(m.t1, m.t2); used[k] = (used[k] || 0) + 1;
+    const g = groupKey(m.t1, m.t2); groups[g] = (groups[g] || 0) + 1;
   });
-  return { cnt, last, partner, opp, used };
+  return { cnt, last, partner, opp, used, groups };
 }
 
 // Devuelve los mejores candidatos para el próximo partido, ordenados por prioridad:
 //  1) Juegan los que menos partidos llevan (así todos igualan).
 //  2) Entre empatados: el que lleva más tiempo esperando y, si sigue el empate, el que llegó primero.
-//  3) No se repite un partido exacto (mismas parejas contra mismas parejas) mientras haya otra opción.
-//  4) Se evita repetir compañeros y rivales.
+//  3) No se repite el mismo grupo de 4 jugadores hasta haber agotado todos los grupos posibles.
+//  4) Si un grupo vuelve a jugar, se cambian las parejas (no se repite el partido exacto).
+//  5) Se evita repetir compañeros y rivales.
 function candidates(c, max) {
-  const { cnt, last, partner, opp, used } = stats(c);
+  const { cnt, last, partner, opp, used, groups } = stats(c);
   const ranked = c.players
     .map((p) => ({ p, cnt: cnt[p.id], last: last[p.id] }))
     .sort((a, b) => a.cnt - b.cnt || a.last - b.last || a.p.id - b.p.id);
@@ -91,22 +94,23 @@ function candidates(c, max) {
       const t1 = [four[a], four[b]], t2 = [four[x], four[y]];
       let cost = 10 * ((partner[pairKey(t1)] || 0) + (partner[pairKey(t2)] || 0));
       for (const u of t1) for (const v of t2) cost += opp[key(u.id, v.id)] || 0;
-      list.push({ t1, t2, score: [used[matchKey(t1, t2)] || 0, order, cost] });
+      list.push({ t1, t2, score: [groups[groupKey(t1, t2)] || 0, used[matchKey(t1, t2)] || 0, order, cost] });
     }
   }
-  list.sort((x, y) => x.score[0] - y.score[0] || x.score[1] - y.score[1] || x.score[2] - y.score[2]);
+  list.sort((x, y) => x.score[0] - y.score[0] || x.score[1] - y.score[1] || x.score[2] - y.score[2] || x.score[3] - y.score[3]);
   return list.slice(0, max);
 }
 
 const virtual = (cand) => ({ id: -1, t1: cand.t1.map(ref), t2: cand.t2.map(ref), done: false });
 
-// ¿Existe una continuación de `depth` partidos sin repetir ninguno?
-function canContinue(c, depth, budget) {
+// ¿Existe una continuación de `depth` partidos sin tener que repetir un grupo antes de tiempo?
+// `level` es la cantidad de veces que ya jugó el grupo elegido ahora (0 mientras queden grupos nuevos).
+function canContinue(c, depth, budget, level) {
   if (depth === 0) return true;
-  for (const cand of candidates(c, 4)) {
-    if (cand.score[0] > 0 || --budget.n < 0) return false;
+  for (const cand of candidates(c, 5)) {
+    if (cand.score[0] > level || --budget.n < 0) return false;
     c.matches.push(virtual(cand));
-    const ok = canContinue(c, depth - 1, budget);
+    const ok = canContinue(c, depth - 1, budget, level);
     c.matches.pop();
     if (ok) return true;
   }
@@ -117,13 +121,17 @@ function canContinue(c, depth, budget) {
 function buildMatch(c) {
   const cands = candidates(c, 6);
   let pick = cands[0];
-  const budget = { n: 150 };
-  for (const cand of cands) {
-    if (cand.score[0] > 0) break; // ya se jugó exactamente igual
-    c.matches.push(virtual(cand));
-    const ok = canContinue(c, LOOKAHEAD - 1, budget);
-    c.matches.pop();
-    if (ok) { pick = cand; break; }
+  const level = cands[0].score[0];
+  // Se busca una opción que deje salida a varios partidos; si no hay, se prueba con menos anticipación
+  search: for (let d = LOOKAHEAD; d >= 1; d--) {
+    const budget = { n: 300 };
+    for (const cand of cands) {
+      if (cand.score[0] > level) break;
+      c.matches.push(virtual(cand));
+      const ok = canContinue(c, d - 1, budget, level);
+      c.matches.pop();
+      if (ok) { pick = cand; break search; }
+    }
   }
   const { cnt } = stats(c);
   [...pick.t1, ...pick.t2].forEach((p) => cnt[p.id]++);
