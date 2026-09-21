@@ -43,15 +43,16 @@ const cycleSize = (c) => {
   return n >= 4 ? n / gcd(n, 4) : null;
 };
 
-const LOOKAHEAD = 6; // cuántos partidos hacia adelante se revisa para no quedar sin salida
+const LOOKAHEAD = 4; // cuántos partidos hacia adelante se revisa para no quedar sin salida
 
 const pairKey = (t) => key(t[0].id, t[1].id);
 const matchKey = (t1, t2) => [pairKey(t1), pairKey(t2)].sort().join('|');
+const triplesOf = (four) => four.map((_, i) => four.filter((__, j) => j !== i).map((p) => p.id).sort((a, b) => a - b).join('-'));
 const groupKey = (t1, t2) => [...t1, ...t2].map((p) => p.id).sort((a, b) => a - b).join('-'); // los 4 jugadores
 
 // Cuenta lo jugado y lo planificado (jugados + pendientes)
 function stats(c) {
-  const cnt = {}, last = {}, partner = {}, opp = {}, used = {}, groups = {};
+  const cnt = {}, last = {}, partner = {}, opp = {}, used = {}, groups = {}, triples = {};
   c.players.forEach((p) => { cnt[p.id] = p.credit; last[p.id] = p.since; });
   c.matches.forEach((m, i) => {
     [...m.t1, ...m.t2].forEach((p) => { if (p.id in cnt) { cnt[p.id]++; last[p.id] = i; } });
@@ -59,24 +60,26 @@ function stats(c) {
     m.t1.forEach((a) => m.t2.forEach((b) => { const k = key(a.id, b.id); opp[k] = (opp[k] || 0) + 1; }));
     const k = matchKey(m.t1, m.t2); used[k] = (used[k] || 0) + 1;
     const g = groupKey(m.t1, m.t2); groups[g] = (groups[g] || 0) + 1;
+    triplesOf([...m.t1, ...m.t2]).forEach((k) => { triples[k] = (triples[k] || 0) + 1; });
   });
-  return { cnt, last, partner, opp, used, groups };
+  return { cnt, last, partner, opp, used, groups, triples };
 }
 
 // Devuelve los mejores candidatos para el próximo partido, ordenados por prioridad:
 //  1) Juegan los que menos partidos llevan (así todos igualan).
 //  2) Entre empatados: el que lleva más tiempo esperando y, si sigue el empate, el que llegó primero.
-//  3) No se repite el mismo grupo de 4 jugadores hasta haber agotado todos los grupos posibles.
-//  4) Si un grupo vuelve a jugar, se cambian las parejas (no se repite el partido exacto).
-//  5) Se evita repetir compañeros y rivales.
+//  3) Se mezclan los jugadores: no se juntan 3 que ya coincidieron en un partido (mientras sea posible).
+//  4) No se repite el mismo grupo de 4 jugadores hasta haber agotado todos los grupos posibles.
+//  5) Si un grupo vuelve a jugar, se cambian las parejas (no se repite el partido exacto).
+//  6) Se evita repetir compañeros y rivales.
 function candidates(c, max) {
-  const { cnt, last, partner, opp, used, groups } = stats(c);
+  const { cnt, last, partner, opp, used, groups, triples } = stats(c);
   const ranked = c.players
     .map((p) => ({ p, cnt: cnt[p.id], last: last[p.id] }))
     .sort((a, b) => a.cnt - b.cnt || a.last - b.last || a.p.id - b.p.id);
   const cutoff = ranked[3].cnt;
   const must = ranked.filter((x) => x.cnt < cutoff).map((x) => x.p); // juegan sí o sí
-  const pool = ranked.filter((x) => x.cnt === cutoff).slice(0, 14).map((x) => x.p); // empatados, por prioridad
+  const pool = ranked.filter((x) => x.cnt === cutoff).slice(0, 10).map((x) => x.p); // empatados, por prioridad
   const need = 4 - must.length;
 
   const combos = [];
@@ -94,10 +97,11 @@ function candidates(c, max) {
       const t1 = [four[a], four[b]], t2 = [four[x], four[y]];
       let cost = 10 * ((partner[pairKey(t1)] || 0) + (partner[pairKey(t2)] || 0));
       for (const u of t1) for (const v of t2) cost += opp[key(u.id, v.id)] || 0;
-      list.push({ t1, t2, score: [groups[groupKey(t1, t2)] || 0, used[matchKey(t1, t2)] || 0, order, cost] });
+      const tri = triplesOf([...t1, ...t2]).reduce((sum, k) => sum + (triples[k] || 0), 0);
+      list.push({ t1, t2, score: [tri, groups[groupKey(t1, t2)] || 0, used[matchKey(t1, t2)] || 0, order, cost] });
     }
   }
-  list.sort((x, y) => x.score[0] - y.score[0] || x.score[1] - y.score[1] || x.score[2] - y.score[2] || x.score[3] - y.score[3]);
+  list.sort((x, y) => { for (let i = 0; i < 5; i++) if (x.score[i] !== y.score[i]) return x.score[i] - y.score[i]; return 0; });
   return list.slice(0, max);
 }
 
@@ -107,7 +111,7 @@ const virtual = (cand) => ({ id: -1, t1: cand.t1.map(ref), t2: cand.t2.map(ref),
 // `level` es la cantidad de veces que ya jugó el grupo elegido ahora (0 mientras queden grupos nuevos).
 function canContinue(c, depth, budget, level) {
   if (depth === 0) return true;
-  for (const cand of candidates(c, 5)) {
+  for (const cand of candidates(c, 4)) {
     if (cand.score[0] > level || --budget.n < 0) return false;
     c.matches.push(virtual(cand));
     const ok = canContinue(c, depth - 1, budget, level);
@@ -124,7 +128,7 @@ function buildMatch(c) {
   const level = cands[0].score[0];
   // Se busca una opción que deje salida a varios partidos; si no hay, se prueba con menos anticipación
   search: for (let d = LOOKAHEAD; d >= 1; d--) {
-    const budget = { n: 300 };
+    const budget = { n: 120 };
     for (const cand of cands) {
       if (cand.score[0] > level) break;
       c.matches.push(virtual(cand));
