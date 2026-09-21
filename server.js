@@ -43,37 +43,95 @@ const cycleSize = (c) => {
   return n >= 4 ? n / gcd(n, 4) : null;
 };
 
-// Genera UN partido nuevo a continuación de los que ya existen (jugados + pendientes)
-function buildMatch(c) {
-  const cnt = {}, last = {}, partner = {}, opp = {};
+const LOOKAHEAD = 4; // cuántos partidos hacia adelante se revisa para no quedar sin salida
+
+const pairKey = (t) => key(t[0].id, t[1].id);
+const matchKey = (t1, t2) => [pairKey(t1), pairKey(t2)].sort().join('|');
+
+// Cuenta lo jugado y lo planificado (jugados + pendientes)
+function stats(c) {
+  const cnt = {}, last = {}, partner = {}, opp = {}, used = {};
   c.players.forEach((p) => { cnt[p.id] = p.credit; last[p.id] = p.since; });
   c.matches.forEach((m, i) => {
     [...m.t1, ...m.t2].forEach((p) => { if (p.id in cnt) { cnt[p.id]++; last[p.id] = i; } });
-    [m.t1, m.t2].forEach((t) => { const k = key(t[0].id, t[1].id); partner[k] = (partner[k] || 0) + 1; });
+    [m.t1, m.t2].forEach((t) => { const k = pairKey(t); partner[k] = (partner[k] || 0) + 1; });
     m.t1.forEach((a) => m.t2.forEach((b) => { const k = key(a.id, b.id); opp[k] = (opp[k] || 0) + 1; }));
+    const k = matchKey(m.t1, m.t2); used[k] = (used[k] || 0) + 1;
   });
+  return { cnt, last, partner, opp, used };
+}
+
+// Devuelve los mejores candidatos para el próximo partido, ordenados por prioridad:
+//  1) Juegan los que menos partidos llevan (así todos igualan).
+//  2) Entre empatados: el que lleva más tiempo esperando y, si sigue el empate, el que llegó primero.
+//  3) No se repite un partido exacto (mismas parejas contra mismas parejas) mientras haya otra opción.
+//  4) Se evita repetir compañeros y rivales.
+function candidates(c, max) {
+  const { cnt, last, partner, opp, used } = stats(c);
+  const ranked = c.players
+    .map((p) => ({ p, cnt: cnt[p.id], last: last[p.id] }))
+    .sort((a, b) => a.cnt - b.cnt || a.last - b.last || a.p.id - b.p.id);
+  const cutoff = ranked[3].cnt;
+  const must = ranked.filter((x) => x.cnt < cutoff).map((x) => x.p); // juegan sí o sí
+  const pool = ranked.filter((x) => x.cnt === cutoff).slice(0, 14).map((x) => x.p); // empatados, por prioridad
+  const need = 4 - must.length;
+
+  const combos = [];
+  (function pick(start, chosen) {
+    if (chosen.length === need) return combos.push(chosen.slice());
+    for (let i = start; i < pool.length; i++) { chosen.push(i); pick(i + 1, chosen); chosen.pop(); }
+  })(0, []);
 
   const options = [[[0, 1], [2, 3]], [[0, 2], [1, 3]], [[0, 3], [1, 2]]];
-  let best = null, bestCost = Infinity;
-  for (let t = 0; t < 40; t++) {
-    // Juegan los que menos jugaron; desempate: quien más esperó, luego azar
-    const four = c.players
-      .map((p) => ({ p, r: Math.random() }))
-      .sort((a, b) => cnt[a.p.id] - cnt[b.p.id] || last[a.p.id] - last[b.p.id] || a.r - b.r)
-      .slice(0, 4).map((x) => x.p);
+  const list = [];
+  for (const idxs of combos) {
+    const four = [...must, ...idxs.map((i) => pool[i])];
+    const order = idxs.reduce((sum, i) => sum + i, 0); // más bajo = más prioridad
     for (const [[a, b], [x, y]] of options) {
       const t1 = [four[a], four[b]], t2 = [four[x], four[y]];
-      let cost = 10 * ((partner[key(t1[0].id, t1[1].id)] || 0) + (partner[key(t2[0].id, t2[1].id)] || 0));
+      let cost = 10 * ((partner[pairKey(t1)] || 0) + (partner[pairKey(t2)] || 0));
       for (const u of t1) for (const v of t2) cost += opp[key(u.id, v.id)] || 0;
-      if (cost < bestCost) { bestCost = cost; best = { t1, t2 }; }
+      list.push({ t1, t2, score: [used[matchKey(t1, t2)] || 0, order, cost] });
     }
   }
-  [...best.t1, ...best.t2].forEach((p) => cnt[p.id]++);
+  list.sort((x, y) => x.score[0] - y.score[0] || x.score[1] - y.score[1] || x.score[2] - y.score[2]);
+  return list.slice(0, max);
+}
+
+const virtual = (cand) => ({ id: -1, t1: cand.t1.map(ref), t2: cand.t2.map(ref), done: false });
+
+// ¿Existe una continuación de `depth` partidos sin repetir ninguno?
+function canContinue(c, depth, budget) {
+  if (depth === 0) return true;
+  for (const cand of candidates(c, 4)) {
+    if (cand.score[0] > 0 || --budget.n < 0) return false;
+    c.matches.push(virtual(cand));
+    const ok = canContinue(c, depth - 1, budget);
+    c.matches.pop();
+    if (ok) return true;
+  }
+  return false;
+}
+
+// Genera UN partido nuevo a continuación de los que ya existen (jugados + pendientes)
+function buildMatch(c) {
+  const cands = candidates(c, 6);
+  let pick = cands[0];
+  const budget = { n: 150 };
+  for (const cand of cands) {
+    if (cand.score[0] > 0) break; // ya se jugó exactamente igual
+    c.matches.push(virtual(cand));
+    const ok = canContinue(c, LOOKAHEAD - 1, budget);
+    c.matches.pop();
+    if (ok) { pick = cand; break; }
+  }
+  const { cnt } = stats(c);
+  [...pick.t1, ...pick.t2].forEach((p) => cnt[p.id]++);
   const vals = c.players.map((p) => cnt[p.id]);
   return {
     id: c.nextMatchId++,
-    t1: best.t1.map(ref),
-    t2: best.t2.map(ref),
+    t1: pick.t1.map(ref),
+    t2: pick.t2.map(ref),
     done: false,
     eq: vals.every((v) => v === vals[0]), // ¿después de este partido todos igualan?
   };
