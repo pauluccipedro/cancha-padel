@@ -121,7 +121,7 @@ function render() {
     ? `<div class="court"><div class="teams">
          <div class="team">${team(first.t1)}</div><div class="net"></div><div class="team">${team(first.t2)}</div>
        </div><div class="bar">Partido ${first.n}: en curso</div></div>
-       <button class="ball" onclick="mark(${first.id}, true, ${first.n})">Terminó este partido</button>`
+       ${pin ? `<button class="ball" onclick="mark(${first.id}, true, ${first.n})">Terminó este partido</button>` : ''}`
     : `<div class="empty">${state.players.length < 4
         ? `Faltan ${4 - state.players.length} jugador${state.players.length === 3 ? '' : 'es'} para armar los partidos.`
         : 'No hay partidos pendientes.'}</div>`;
@@ -130,7 +130,7 @@ function render() {
   $('upcoming').innerHTML = pending.length ? pending.map((m, i) =>
     `<div class="m"><span class="num">${m.n}</span>
        <span class="who">${i === 0 ? '🎾 <b>En curso:</b> ' : ''}${names(m.t1)} <span>vs</span> ${names(m.t2)}</span>
-       <button class="small ghost" onclick="mark(${m.id}, true, ${m.n})">Jugado</button></div>` +
+       ${pin ? `<button class="small ghost" onclick="mark(${m.id}, true, ${m.n})">Jugado</button>` : ''}</div>` +
     (m.eq ? `<div class="eq">Hasta acá todos jugaron la misma cantidad</div>` : '')).join('')
     : '<p class="note">Cuando se anoten 4 jugadores, acá aparece el fixture.</p>';
 
@@ -150,7 +150,7 @@ function render() {
   $('done').innerHTML = done.length ? [...done].reverse().map((m) =>
     `<div class="m done"><span class="num">${m.n}</span>
        <span class="who">${names(m.t1)} vs ${names(m.t2)}</span>
-       <button class="small ghost" onclick="mark(${m.id}, false, ${m.n})">Deshacer</button></div>`).join('')
+       ${pin ? `<button class="small ghost" onclick="mark(${m.id}, false, ${m.n})">Deshacer</button>` : ''}</div>`).join('')
     : '<p class="note">Todavía no se marcó ningún partido.</p>';
 
   // Organizador
