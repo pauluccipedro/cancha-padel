@@ -59,7 +59,7 @@
   <input id="name" placeholder="Tu nombre" maxlength="30" autocomplete="off">
   <button id="join">Anotarme</button>
 </div>
-<p class="note">Si llegás después, el fixture se rearma solo y se suma tu nombre.</p>
+<p class="note">Si llegás con un partido en curso, ese no cambia: tu nombre entra en los partidos siguientes.</p>
 
 <h2>Jugadores (<span id="count">0</span>)</h2>
 <p class="note" id="cycle"></p>
@@ -121,16 +121,16 @@ function render() {
   $('next').innerHTML = first
     ? `<div class="court"><div class="teams">
          <div class="team">${team(first.t1)}</div><div class="net"></div><div class="team">${team(first.t2)}</div>
-       </div><div class="bar">Partido ${first.n}: es el que sigue</div></div>
-       <button class="ball" onclick="mark(${first.id}, true, ${first.n})">Ya se jugó este partido</button>`
+       </div><div class="bar">Partido ${first.n}: en curso</div></div>
+       <button class="ball" onclick="mark(${first.id}, true, ${first.n})">Terminó este partido</button>`
     : `<div class="empty">${state.players.length < 4
         ? `Faltan ${4 - state.players.length} jugador${state.players.length === 3 ? '' : 'es'} para armar los partidos.`
         : 'No hay partidos pendientes.'}</div>`;
 
   // Lista de próximos, con marca donde todos igualan
-  $('upcoming').innerHTML = pending.length ? pending.map((m) =>
+  $('upcoming').innerHTML = pending.length ? pending.map((m, i) =>
     `<div class="m"><span class="num">${m.n}</span>
-       <span class="who">${names(m.t1)} <span>vs</span> ${names(m.t2)}</span>
+       <span class="who">${i === 0 ? '🎾 <b>En curso:</b> ' : ''}${names(m.t1)} <span>vs</span> ${names(m.t2)}</span>
        <button class="small ghost" onclick="mark(${m.id}, true, ${m.n})">Jugado</button></div>` +
     (m.eq ? `<div class="eq">Hasta acá todos jugaron la misma cantidad</div>` : '')).join('')
     : '<p class="note">Cuando se anoten 4 jugadores, acá aparece el fixture.</p>';
