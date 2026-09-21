@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Panel del organizador</title>
+<style>
+  :root { --court:#1c4f8f; --bg:#eef2f6; --ink:#16202c; --ball:#e3e84a; --mute:#5d6b7a; }
+  * { box-sizing: border-box; }
+  body { margin:0 auto; padding:16px; max-width:520px; background:var(--bg); color:var(--ink);
+         font-family: system-ui, -apple-system, "Segoe UI", sans-serif; line-height:1.4; }
+  h1 { font-size:1.5rem; margin:4px 0 16px; }
+  .row { display:flex; gap:8px; margin-bottom:8px; }
+  input { flex:1; font-size:1rem; padding:12px; border:2px solid #b8c3cf; border-radius:6px; min-width:0; }
+  input:focus, button:focus-visible { outline:3px solid var(--ball); outline-offset:1px; border-color:var(--court); }
+  button { font-size:1rem; padding:12px 16px; border:0; border-radius:6px; background:var(--court); color:#fff; font-weight:600; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--mute); border:2px solid #b8c3cf; }
+  .card { background:#fff; border-radius:8px; padding:16px; margin-top:16px; text-align:center; border-top:6px solid var(--court); }
+  .card h2 { margin:0 0 8px; font-size:1.3rem; }
+  .card .qr svg { width:220px; height:220px; }
+  .card a { display:block; color:var(--court); word-break:break-all; font-size:.9rem; margin:8px 0 4px; }
+  .card .row { margin:12px 0 0; }
+  .card .row button { flex:1; }
+  .note { color:var(--mute); font-size:.9rem; }
+  .warn { background:#fff3cd; border-radius:6px; padding:10px 12px; font-size:.9rem; margin-bottom:12px; }
+  [hidden] { display:none !important; }
+  @media print {
+    body { background:#fff; max-width:none; }
+    body.printing > *:not(#panel), #panel > *:not(#courts), .card:not(.print-this), .card .row, .card a { display:none !important; }
+    .card { border:0; margin:0; padding:0; }
+    .card h2 { font-size:3rem; margin-bottom:24px; }
+    .card .qr svg { width:70vw; height:70vw; }
+    .card::after { content:"Escaneá para anotarte y ver los partidos"; display:block; font-size:1.5rem; margin-top:16px; }
+  }
+</style>
+</head>
+<body>
+<h1>🎾 Panel del organizador</h1>
+
+<div id="login">
+  <p class="note">Ingresá tu PIN para crear canchas y generar los QR.</p>
+  <div class="row"><input id="pin" type="password" placeholder="PIN" autocomplete="off"><button id="enter">Entrar</button></div>
+</div>
+
+<div id="panel" hidden>
+  <div class="warn" id="warn" hidden>Estás en <b>localhost</b>: los QR van a apuntar a esta dirección y no van a funcionar en otros celulares. Abrí este panel desde la URL pública del servidor para generar los QR definitivos.</div>
+  <div class="row"><input id="cname" placeholder="Nombre (ej: Cancha 1)" maxlength="40"><button id="create">Crear cancha</button></div>
+  <p class="note">Cada cancha tiene su propio QR, sus propios jugadores y su propio orden de partidos.</p>
+  <div id="courts"></div>
+</div>
+
+<script>
+let pin = localStorage.getItem('pin') || '';
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+
+async function api(url, method = 'GET', body) {
+  const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json', 'x-pin': pin },
+                               body: body ? JSON.stringify(body) : undefined });
+  const d = await r.json();
+  if (!r.ok) {
+    if (r.status === 401) { pin = ''; localStorage.removeItem('pin'); show(false); }
+    alert(d.error);
+    throw new Error(d.error);
+  }
+  return d;
+}
+
+function show(on) { $('login').hidden = on; $('panel').hidden = !on; }
+
+async function load() {
+  if (!pin) return show(false);
+  try {
+    const list = await api('/api/admin/courts');
+    show(true);
+    $('warn').hidden = !['localhost', '127.0.0.1'].includes(location.hostname);
+    $('courts').innerHTML = list.length ? list.map((c) => `
+      <div class="card" id="card-${c.id}">
+        <h2>${esc(c.name)}</h2>
+        <div class="qr">${c.qr}</div>
+        <a href="${esc(c.url)}" target="_blank">${esc(c.url)}</a>
+        <div class="note">${c.players} jugador${c.players === 1 ? '' : 'es'} anotado${c.players === 1 ? '' : 's'}</div>
+        <div class="row">
+          <button onclick="printQr(${c.id})">Imprimir QR</button>
+          <button class="ghost" onclick="del(${c.id}, '${esc(c.name).replace(/'/g, '')}')">Borrar</button>
+        </div>
+      </div>`).join('') : '<p class="note">Todavía no hay canchas. Creá la primera.</p>';
+  } catch (e) {}
+}
+
+$('enter').onclick = () => { pin = $('pin').value; localStorage.setItem('pin', pin); load(); };
+$('pin').onkeydown = (e) => { if (e.key === 'Enter') $('enter').click(); };
+$('create').onclick = async () => { await api('/api/admin/courts', 'POST', { name: $('cname').value }); $('cname').value = ''; load(); };
+$('cname').onkeydown = (e) => { if (e.key === 'Enter') $('create').click(); };
+
+async function del(id, name) {
+  if (confirm(`¿Borrar "${name}" con todos sus jugadores y partidos? El QR dejará de funcionar.`)) {
+    await api('/api/admin/courts/' + id, 'DELETE'); load();
+  }
+}
+
+function printQr(id) {
+  const card = $('card-' + id);
+  card.classList.add('print-this'); document.body.classList.add('printing');
+  window.print();
+  card.classList.remove('print-this'); document.body.classList.remove('printing');
+}
+
+load();
+</script>
+</body>
+</html>

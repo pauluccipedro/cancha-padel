@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cancha abierta</title>
+<style>
+  :root { --court:#1c4f8f; --line:#fff; --bg:#eef2f6; --ink:#16202c; --ball:#e3e84a; --mute:#5d6b7a; }
+  * { box-sizing: border-box; }
+  body { margin:0 auto; padding:16px; max-width:520px; background:var(--bg); color:var(--ink);
+         font-family: system-ui, -apple-system, "Segoe UI", sans-serif; line-height:1.4; }
+  h1 { font-size:1.6rem; margin:4px 0 16px; }
+  h2 { font-size:1.05rem; margin:24px 0 8px; }
+  .court { background:var(--court); color:#fff; border:3px solid var(--line); border-radius:6px; overflow:hidden; }
+  .court .teams { display:grid; grid-template-columns:1fr 6px 1fr; }
+  .court .team { padding:18px 10px; text-align:center; font-weight:600; }
+  .court .team div { padding:4px 0; }
+  .court .net { background:repeating-linear-gradient(#fff 0 6px, transparent 6px 10px); }
+  .court .bar { background:rgba(0,0,0,.25); padding:8px 12px; font-size:.9rem; }
+  .empty { border:2px dashed #b8c3cf; border-radius:6px; padding:18px; text-align:center; color:var(--mute); }
+  .row { display:flex; gap:8px; }
+  input { flex:1; font-size:1rem; padding:12px; border:2px solid #b8c3cf; border-radius:6px; min-width:0; }
+  input:focus, button:focus-visible { outline:3px solid var(--ball); outline-offset:1px; border-color:var(--court); }
+  button { font-size:1rem; padding:12px 16px; border:0; border-radius:6px; background:var(--court); color:#fff; font-weight:600; cursor:pointer; }
+  button.ball { background:var(--ball); color:var(--ink); width:100%; margin-top:8px; }
+  button.ghost { background:transparent; color:var(--mute); border:2px solid #b8c3cf; }
+  button.small { padding:6px 10px; font-size:.85rem; white-space:nowrap; }
+  button.x { padding:2px 10px; background:transparent; color:#b3261e; font-size:1.2rem; }
+  .admin { display:flex; gap:8px; margin-top:12px; }
+  .admin button { flex:1; }
+  table { width:100%; border-collapse:collapse; background:#fff; border-radius:6px; overflow:hidden; }
+  td { padding:10px 12px; border-bottom:1px solid #e3e8ee; }
+  td.n { text-align:right; font-variant-numeric:tabular-nums; font-weight:700; width:1%; white-space:nowrap; }
+  tr.now td { background:#fbfcd9; }
+  .note { color:var(--mute); font-size:.9rem; margin:4px 0 8px; }
+  .m { display:flex; align-items:center; gap:10px; background:#fff; padding:10px 12px; border-bottom:1px solid #e3e8ee; }
+  .m:first-child { border-radius:6px 6px 0 0; } .m:last-child { border-radius:0 0 6px 6px; border-bottom:0; }
+  .m .num { font-weight:700; width:1.6rem; color:var(--court); }
+  .m .who { flex:1; font-size:.95rem; }
+  .m .who span { color:var(--mute); }
+  .m.done .who { color:var(--mute); text-decoration:line-through; }
+  .eq { background:#fbfcd9; color:var(--mute); font-size:.8rem; text-align:center; padding:4px; }
+  details summary { cursor:pointer; font-weight:600; margin:24px 0 8px; }
+  footer { margin-top:28px; text-align:center; }
+  footer a { color:var(--mute); font-size:.9rem; }
+  @media (prefers-reduced-motion: no-preference) { button:active { transform:scale(.98); } }
+</style>
+</head>
+<body>
+<h1>🎾 <span id="title">Cancha abierta</span></h1>
+
+<section id="next"></section>
+
+<h2>Próximos partidos</h2>
+<div id="upcoming"></div>
+
+<h2>Anotarme</h2>
+<div class="row">
+  <input id="name" placeholder="Tu nombre" maxlength="30" autocomplete="off">
+  <button id="join">Anotarme</button>
+</div>
+<p class="note">Si llegás después, el fixture se rearma solo y se suma tu nombre.</p>
+
+<h2>Jugadores (<span id="count">0</span>)</h2>
+<p class="note" id="cycle"></p>
+<table id="players"></table>
+
+<details>
+  <summary>Partidos jugados (<span id="doneCount">0</span>)</summary>
+  <div id="done"></div>
+</details>
+
+<div class="admin" id="adminBox"></div>
+<footer><a href="#" id="adm"></a></footer>
+
+<script>
+let pin = localStorage.getItem('pin') || '';
+const cid = location.pathname.split('/')[2];
+const API = '/api/courts/' + cid;
+let timer;
+let state = { players: [], matches: [], cycle: null };
+
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+const $ = (id) => document.getElementById(id);
+const names = (t) => t.map((p) => esc(p.name)).join(' y ');
+
+async function api(url, method = 'GET', body) {
+  const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json', 'x-pin': pin },
+                               body: body ? JSON.stringify(body) : undefined });
+  const d = await r.json();
+  if (!r.ok) {
+    if (r.status === 401) { pin = ''; localStorage.removeItem('pin'); render(); }
+    alert(d.error);
+  }
+  return d;
+}
+
+async function refresh() {
+  try {
+    const r = await fetch(API + '/state');
+    if (r.status === 404) {
+      clearInterval(timer);
+      document.body.innerHTML = '<h1>Esta cancha no existe</h1><p>Escaneá de nuevo el QR de tu cancha.</p>';
+      return;
+    }
+    state = await r.json();
+    render();
+  } catch (e) {}
+}
+
+function render() {
+  $('title').textContent = state.name;
+  document.title = state.name;
+  const pending = state.matches.filter((m) => !m.done);
+  const done = state.matches.filter((m) => m.done);
+  const first = pending[0];
+  const playing = new Set(first ? [...first.t1, ...first.t2].map((p) => p.id) : []);
+  const team = (t) => t.map((p) => `<div>${esc(p.name)}</div>`).join('');
+
+  // Partido que sigue
+  $('next').innerHTML = first
+    ? `<div class="court"><div class="teams">
+         <div class="team">${team(first.t1)}</div><div class="net"></div><div class="team">${team(first.t2)}</div>
+       </div><div class="bar">Partido ${first.n}: es el que sigue</div></div>
+       <button class="ball" onclick="mark(${first.id}, true, ${first.n})">Ya se jugó este partido</button>`
+    : `<div class="empty">${state.players.length < 4
+        ? `Faltan ${4 - state.players.length} jugador${state.players.length === 3 ? '' : 'es'} para armar los partidos.`
+        : 'No hay partidos pendientes.'}</div>`;
+
+  // Lista de próximos, con marca donde todos igualan
+  $('upcoming').innerHTML = pending.length ? pending.map((m) =>
+    `<div class="m"><span class="num">${m.n}</span>
+       <span class="who">${names(m.t1)} <span>vs</span> ${names(m.t2)}</span>
+       <button class="small ghost" onclick="mark(${m.id}, true, ${m.n})">Jugado</button></div>` +
+    (m.eq ? `<div class="eq">Hasta acá todos jugaron la misma cantidad</div>` : '')).join('')
+    : '<p class="note">Cuando se anoten 4 jugadores, acá aparece el fixture.</p>';
+
+  // Jugadores
+  $('count').textContent = state.players.length;
+  $('cycle').textContent = state.cycle
+    ? `Todos igualan partidos cada ${state.cycle} partidos del fixture.` : 'Se necesitan 4 jugadores para armar el fixture.';
+  const rows = [...state.players].sort((a, b) => b.played - a.played || a.name.localeCompare(b.name));
+  $('players').innerHTML = rows.length ? rows.map((p) =>
+    `<tr class="${playing.has(p.id) ? 'now' : ''}"><td>${esc(p.name)}${playing.has(p.id) ? ' 🎾' : ''}</td>
+     <td class="n">${p.played} ${p.played === 1 ? 'jugado' : 'jugados'}</td>
+     ${pin ? `<td><button class="x" aria-label="Quitar ${esc(p.name)}" onclick="removeP(${p.id})">×</button></td>` : ''}</tr>`).join('')
+    : '<tr><td>Todavía no hay nadie anotado.</td></tr>';
+
+  // Jugados
+  $('doneCount').textContent = done.length;
+  $('done').innerHTML = done.length ? [...done].reverse().map((m) =>
+    `<div class="m done"><span class="num">${m.n}</span>
+       <span class="who">${names(m.t1)} vs ${names(m.t2)}</span>
+       <button class="small ghost" onclick="mark(${m.id}, false, ${m.n})">Deshacer</button></div>`).join('')
+    : '<p class="note">Todavía no se marcó ningún partido.</p>';
+
+  // Organizador
+  $('adminBox').innerHTML = pin
+    ? `<button class="ghost" onclick="regen()">Rearmar fixture</button><button class="ghost" onclick="resetAll()">Empezar jornada nueva</button>` : '';
+  $('adm').textContent = pin ? 'Salir del modo organizador' : 'Soy el organizador';
+}
+
+async function mark(id, value, n) {
+  if (value && !confirm(`¿Marcar el partido ${n} como jugado?`)) return;
+  await api(`${API}/matches/${id}/done`, 'POST', { done: value });
+  refresh();
+}
+const removeP = async (id) => { if (confirm('¿Quitar jugador? Se rearman los partidos pendientes.')) { await api(API + '/players/' + id, 'DELETE'); refresh(); } };
+const regen = async () => { await api(API + '/regenerate', 'POST'); refresh(); };
+const resetAll = async () => { if (confirm('Se borran jugadores y partidos. ¿Seguro?')) { await api(API + '/reset', 'POST'); refresh(); } };
+
+$('join').onclick = async () => {
+  const d = await api(API + '/join', 'POST', { name: $('name').value.trim() });
+  if (d.ok) $('name').value = '';
+  refresh();
+};
+$('name').onkeydown = (e) => { if (e.key === 'Enter') $('join').click(); };
+
+$('adm').onclick = (e) => {
+  e.preventDefault();
+  if (pin) { pin = ''; localStorage.removeItem('pin'); }
+  else { pin = prompt('PIN del organizador') || ''; if (pin) localStorage.setItem('pin', pin); }
+  render();
+};
+
+refresh();
+timer = setInterval(refresh, 3000);
+</script>
+</body>
+</html>
