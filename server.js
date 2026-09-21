@@ -211,8 +211,8 @@ app.post('/api/courts/:cid/join', (req, res) => {
   res.json({ ok: true });
 });
 
-// Cualquier jugador puede marcar (o desmarcar) un partido como jugado
-app.post('/api/courts/:cid/matches/:id/done', (req, res) => {
+// Solo el organizador (con PIN) puede marcar o desmarcar un partido como jugado
+app.post('/api/courts/:cid/matches/:id/done', admin, (req, res) => {
   const c = req.court;
   const m = c.matches.find((x) => x.id === Number(req.params.id));
   if (!m) return res.status(404).json({ error: 'Ese partido ya no existe. Actualizá la pantalla' });
