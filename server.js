@@ -88,9 +88,16 @@ function fill(c) {
   while (pending++ < target) c.matches.push(buildMatch(c));
 }
 
-// Cuando cambian los jugadores se rearma lo pendiente (lo jugado no se toca)
+// El partido en curso es el primer pendiente. Al rearmar se conserva tal cual
+// (salvo que se haya quitado a alguno de sus jugadores) y solo cambian los siguientes.
+const trim = (c) => {
+  const current = c.matches.find((m) => !m.done);
+  const valid = current && [...current.t1, ...current.t2].every((p) => c.players.some((x) => x.id === p.id));
+  c.matches = c.matches.filter((m) => m.done || (valid && m === current));
+};
+
 const rebuild = (c) => {
-  c.matches = c.matches.filter((m) => m.done);
+  trim(c);
   fill(c);
   save();
 };
@@ -126,7 +133,7 @@ app.post('/api/courts/:cid/join', (req, res) => {
   if (!name) return res.status(400).json({ error: 'Escribí tu nombre' });
   if (c.players.some((p) => p.name.toLowerCase() === name.toLowerCase()))
     return res.status(400).json({ error: 'Ese nombre ya está anotado' });
-  c.matches = c.matches.filter((m) => m.done);
+  trim(c);
   // Quien llega tarde arranca "parejo" con el que menos jugó
   const min = c.players.length ? Math.min(...c.players.map((p) => p.credit + donePlayed(c, p.id))) : 0;
   c.players.push({ id: c.nextPlayerId++, name, credit: min, since: c.matches.length });
