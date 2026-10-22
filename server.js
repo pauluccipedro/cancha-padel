@@ -52,7 +52,7 @@ const groupKey = (t1, t2) => [...t1, ...t2].map((p) => p.id).sort((a, b) => a - 
 
 // Cuenta lo jugado y lo planificado (jugados + pendientes)
 function stats(c) {
-  const cnt = {}, last = {}, partner = {}, opp = {}, used = {}, groups = {}, triples = {}, streak = {}, idle = {};
+  const cnt = {}, last = {}, partner = {}, opp = {}, together = {}, used = {}, groups = {}, triples = {}, streak = {}, idle = {};
   c.players.forEach((p) => { cnt[p.id] = p.credit; last[p.id] = p.since; streak[p.id] = 0; idle[p.id] = 0; });
   c.matches.forEach((m, i) => {
     const playing = new Set([...m.t1, ...m.t2].map((p) => p.id));
@@ -63,23 +63,30 @@ function stats(c) {
     [...m.t1, ...m.t2].forEach((p) => { if (p.id in cnt) { cnt[p.id]++; last[p.id] = i; } });
     [m.t1, m.t2].forEach((t) => { const k = pairKey(t); partner[k] = (partner[k] || 0) + 1; });
     m.t1.forEach((a) => m.t2.forEach((b) => { const k = key(a.id, b.id); opp[k] = (opp[k] || 0) + 1; }));
+    // "together": compañeros o rivales, sin distinguir; sirve para que todos se crucen con todos
+    const four = [...m.t1, ...m.t2];
+    for (let a = 0; a < 4; a++) for (let b = a + 1; b < 4; b++) {
+      const k = key(four[a].id, four[b].id); together[k] = (together[k] || 0) + 1;
+    }
     const k = matchKey(m.t1, m.t2); used[k] = (used[k] || 0) + 1;
     const g = groupKey(m.t1, m.t2); groups[g] = (groups[g] || 0) + 1;
-    triplesOf([...m.t1, ...m.t2]).forEach((k) => { triples[k] = (triples[k] || 0) + 1; });
+    triplesOf(four).forEach((k) => { triples[k] = (triples[k] || 0) + 1; });
   });
-  return { cnt, last, partner, opp, used, groups, triples, streak, idle };
+  return { cnt, last, partner, opp, together, used, groups, triples, streak, idle };
 }
 
 // Devuelve los mejores candidatos para el próximo partido, ordenados por prioridad:
 //  1) Juegan los que menos partidos llevan (así todos igualan).
 //  2) Entre empatados: el que lleva más tiempo esperando y, si sigue el empate, el que llegó primero.
 //  3) Descanso parejo: nadie juega 3 partidos seguidos ni espera 3 seguidos (mientras sea posible).
-//  4) Se mezclan los jugadores: no se juntan 3 que ya coincidieron en un partido (mientras sea posible).
-//  5) No se repite el mismo grupo de 4 jugadores hasta haber agotado todos los grupos posibles.
-//  6) Si un grupo vuelve a jugar, se cambian las parejas (no se repite el partido exacto).
-//  7) Se prefiere que las rachas de juego y de espera sean cortas, y se evita repetir compañeros y rivales.
+//  4) Jugar con todos: se prioriza que los 4 jugadores del partido compartan cancha con gente nueva,
+//     para que al principio se vayan cruzando todos entre sí (como compañeros o como rivales).
+//  5) No se juntan 3 jugadores que ya coincidieron antes en un partido (mientras sea posible).
+//  6) No se repite el mismo grupo de 4 jugadores hasta haber agotado todos los grupos posibles.
+//  7) Si un grupo vuelve a jugar, se cambian las parejas (no se repite el partido exacto).
+//  8) Se prefiere que las rachas de juego y de espera sean cortas, y se evita repetir compañeros y rivales.
 function candidates(c, max) {
-  const { cnt, last, partner, opp, used, groups, triples, streak, idle } = stats(c);
+  const { cnt, last, partner, opp, together, used, groups, triples, streak, idle } = stats(c);
   const ranked = c.players
     .map((p) => ({ p, cnt: cnt[p.id], last: last[p.id] }))
     .sort((a, b) => a.cnt - b.cnt || a.last - b.last || a.p.id - b.p.id);
@@ -106,22 +113,27 @@ function candidates(c, max) {
       if (k >= 2) pen += (k - 1) * (k - 1);
       soft += k * k;
     }
+    // Cuántos de los 6 pares posibles entre estos 4 ya compartieron cancha antes (0 = los 4 se mezclan de cero)
+    let mix = 0;
+    for (let a = 0; a < 4; a++) for (let b = a + 1; b < 4; b++) {
+      if (together[key(four[a].id, four[b].id)] > 0) mix++;
+    }
     for (const [[a, b], [x, y]] of options) {
       const t1 = [four[a], four[b]], t2 = [four[x], four[y]];
       let cost = 10 * ((partner[pairKey(t1)] || 0) + (partner[pairKey(t2)] || 0));
       for (const u of t1) for (const v of t2) cost += opp[key(u.id, v.id)] || 0;
       const tri = triplesOf([...t1, ...t2]).reduce((sum, k) => sum + (triples[k] || 0), 0);
-      list.push({ t1, t2, score: [pen, tri, groups[groupKey(t1, t2)] || 0, used[matchKey(t1, t2)] || 0, soft, order, cost] });
+      list.push({ t1, t2, score: [pen, mix, tri, groups[groupKey(t1, t2)] || 0, used[matchKey(t1, t2)] || 0, soft, order, cost] });
     }
   }
-  list.sort((x, y) => { for (let i = 0; i < 7; i++) if (x.score[i] !== y.score[i]) return x.score[i] - y.score[i]; return 0; });
+  list.sort((x, y) => { for (let i = 0; i < 8; i++) if (x.score[i] !== y.score[i]) return x.score[i] - y.score[i]; return 0; });
   return list.slice(0, max);
 }
 
 const virtual = (cand) => ({ id: -1, t1: cand.t1.map(ref), t2: cand.t2.map(ref), done: false });
 
-// ¿Existe una continuación de `depth` partidos sin tener que repetir un grupo antes de tiempo?
-// `level` es la cantidad de tríos repetidos que se acepta (0 mientras se pueda mezclar).
+// ¿Existe una continuación de `depth` partidos sin tener que empeorar la mezcla de jugadores?
+// `level` es la cantidad de pares ya compartidos que se acepta (0 mientras haya mezcla nueva posible).
 function canContinue(c, depth, budget, level) {
   if (depth === 0) return true;
   for (const cand of candidates(c, 4)) {
@@ -225,12 +237,20 @@ app.post('/api/courts/:cid/join', (req, res) => {
   res.json({ ok: true });
 });
 
-// Solo el organizador (con PIN) puede marcar o desmarcar un partido como jugado
-app.post('/api/courts/:cid/matches/:id/done', admin, (req, res) => {
+// El organizador (con PIN) puede marcar o desmarcar cualquier partido.
+// Sin PIN, cualquiera puede marcar como jugado (no desmarcar) solo el partido en curso.
+app.post('/api/courts/:cid/matches/:id/done', (req, res) => {
   const c = req.court;
   const m = c.matches.find((x) => x.id === Number(req.params.id));
   if (!m) return res.status(404).json({ error: 'Ese partido ya no existe. Actualizá la pantalla' });
-  m.done = req.body.done !== false;
+  const isAdmin = req.get('x-pin') === PIN;
+  const value = req.body.done !== false;
+  if (!isAdmin) {
+    const current = c.matches.find((x) => !x.done);
+    if (!value || !current || current.id !== m.id)
+      return res.status(403).json({ error: 'Solo se puede marcar como jugado el partido en curso' });
+  }
+  m.done = value;
   fill(c);
   save();
   res.json({ ok: true });
